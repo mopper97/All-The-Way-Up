@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
 import numpy as np
+from tqdm import tqdm
 
 from utils import create_dataloader
 
@@ -103,6 +104,7 @@ class Banyan(nn.Module):
         self.dropout = nn.Dropout(0.1)
         self.device = device
 
+    @torch.no_grad()
     def reset_cache(self):
         self.n_c.fill_(0)
         self.t_c.fill_(-1)
@@ -123,7 +125,7 @@ class Banyan(nn.Module):
             # set indices for the new nodes 
             dst = md + 1 + torch.arange(src.shape[0], device=src.device)
             md = torch.max(dst)
-            # add parent representations to the cache
+
             self.n_c[dst] = self.comp_fn(self.n_c[src].view(-1, 2, 4, 4))
             # add composition indices to the cache
             self.c_c[dst] = src
@@ -150,7 +152,6 @@ class Banyan(nn.Module):
         # index - tensor that is going to keep track of which nodes constitute the frontier
         # leaves - indices to get the initial embeddings from the embedding matrix
         index, leaves = create_index(seqs)
-        print(index)
         # add the initial leaves to the node cache
         self.n_c[:leaves.shape[0]] = self.dropout(self.embedding(leaves))
         # get the max of index as the initial max dist
@@ -180,9 +181,11 @@ class Banyan(nn.Module):
         # reset cache 
         self.reset_cache()
         nodes, targets = self.compose(x)
-        print(nodes.shape, targets.shape)
-
-        return x
+        lefts = nodes[targets[:, 1]]
+        rights = nodes[targets[:, 2]]
+        outs = self.comp_fn(torch.cat((lefts, rights), dim=1).view(-1, 2, 4,4))
+        outs = outs @ nodes.T
+        return F.cross_entropy(outs, targets[:, 0])
             
 
 
@@ -191,8 +194,19 @@ class Banyan(nn.Module):
 
 
 
-dl = create_dataloader('../data/small_train.txt', 4, shuffle=True)
+dl = create_dataloader('../data/small_train.txt', 64, shuffle=True)
 model = Banyan(16, 25001, 'cpu')
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+model.train()
 
-for i in dl:
-    model(i)
+for e in range(10):
+    epoch_loss = 0
+    for i in tqdm(dl):
+        optimizer.zero_grad()
+        loss = model(i)
+        loss.backward(retain_graph=True)
+        # loss.backward()
+        optimizer.step()
+        epoch_loss += loss.item()
+    print(epoch_loss / len(dl))
+
