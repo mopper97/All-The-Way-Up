@@ -109,7 +109,7 @@ class Banyan(nn.Module):
         self.c_c.fill_(-1)
 
 
-    def update_graph(self, retrieval, index):
+    def update_graph(self, retrieval, index, md):
         # range used for indexing
         range_tensor = torch.arange(index.shape[0], device=index.device, dtype=torch.long).repeat_interleave(2)
         # get src
@@ -119,27 +119,29 @@ class Banyan(nn.Module):
         src = src[mask]
         # make sure src is unique (no duplicate parents)
         src = torch.unique(src, dim=0) 
-        # set indices for the new nodes
-        dst = torch.max(index) + 1 + torch.arange(src.shape[0], device=src.device)
-        # add parent representations to the cache
-        self.n_c[dst] = self.comp_fn(self.n_c[src].view(-1, 2, 4, 4))
-        # add composition indices to the cache
-        self.c_c[dst] = src
-        # add target indices to the cache
-        l_t  = torch.cat((retrieval[::2], (retrieval[::2]-1), retrieval[1::2]), dim=0)
-        # make sure right neighbour is not out of bounds
-        r_n = retrieval[1::2] + 1
-        r_n[r_n > torch.max(index)] = -1  
-        r_t = torch.cat((retrieval[1::2], retrieval[::2], r_n), dim=0)
-        # apply same filtering as to src to ensure no duplicates
-        t = torch.cat((l_t, r_t), dim=0).view(-1, 3)
-        t = torch.unique(t, dim=0)
-        mask = ~torch.eq(t.unsqueeze(1), self.t_c).all(dim=2).any(dim=1)
-        t = t[mask]
-        # add target indices to the cache
-        adds = (self.t_c != -1).all(dim=1).sum()
-        self.t_c[adds: adds + t.shape[0]] = t
-        return index
+        if not src.numel() == 0:
+            # set indices for the new nodes 
+            dst = md + 1 + torch.arange(src.shape[0], device=src.device)
+            md = torch.max(dst)
+            # add parent representations to the cache
+            self.n_c[dst] = self.comp_fn(self.n_c[src].view(-1, 2, 4, 4))
+            # add composition indices to the cache
+            self.c_c[dst] = src
+            # add target indices to the cache
+            l_t  = torch.cat((retrieval[::2], (retrieval[::2]-1), retrieval[1::2]), dim=0)
+            # make sure right neighbour is not out of bounds
+            r_n = retrieval[1::2] + 1
+            r_n[r_n > torch.max(index)] = -1  
+            r_t = torch.cat((retrieval[1::2], retrieval[::2], r_n), dim=0)
+            # apply same filtering as to src to ensure no duplicates
+            t = torch.cat((l_t, r_t), dim=0).view(-1, 3)
+            t = torch.unique(t, dim=0)
+            mask = ~torch.eq(t.unsqueeze(1), self.t_c).all(dim=2).any(dim=1)
+            t = t[mask]
+            # add target indices to the cache
+            adds = (self.t_c != -1).all(dim=1).sum()
+            self.t_c[adds: adds + t.shape[0]] = t
+        return index, md
 
 
     def compose(self, seqs):
@@ -148,8 +150,11 @@ class Banyan(nn.Module):
         # index - tensor that is going to keep track of which nodes constitute the frontier
         # leaves - indices to get the initial embeddings from the embedding matrix
         index, leaves = create_index(seqs)
+        print(index)
         # add the initial leaves to the node cache
         self.n_c[:leaves.shape[0]] = self.dropout(self.embedding(leaves))
+        # get the max of index as the initial max dist
+        md = torch.max(index)
         # reduce the frontiers till we get to the root 
         while index.shape[1] != 1:
             # get the merge indices
@@ -157,20 +162,26 @@ class Banyan(nn.Module):
             # get the completion mask
             completion_mask = get_complete(index)
             # update the graph 
-            index[completion_mask] = self.update_graph(retrieval[completion_mask.repeat_interleave(2)], index[completion_mask])
+            # check corner case where max index is masked out by completion mask and therefore you might be overwriting rows in the cache
+            index[completion_mask], md = self.update_graph(retrieval[completion_mask.repeat_interleave(2)], index[completion_mask], md)
             # reduce the frontiers
             index = reduce_frontier(index, completion_mask, range_tensor, max_sim)
 
         
+        # return all filled values of node cache 
+        nodes = self.n_c[:md + 1]
+        # return all filled values of target cache
+        targets = self.t_c[(self.t_c != -1).all(dim=1)]
+        return nodes, targets
 
 
 
     def forward(self, x):
         # reset cache 
         self.reset_cache()
-        self.compose(x)
+        nodes, targets = self.compose(x)
+        print(nodes.shape, targets.shape)
 
-        quit()
         return x
             
 
@@ -185,4 +196,3 @@ model = Banyan(16, 25001, 'cpu')
 
 for i in dl:
     model(i)
-    break
