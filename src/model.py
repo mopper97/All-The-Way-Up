@@ -22,13 +22,20 @@ def create_index(seqs):
 
 
 class Banyan(nn.Module):
-    def __init__(self, e_dim):
+    def __init__(self, e_dim, vocab_size):
         super(Banyan, self).__init__()
         self.E = e_dim 
+        self.V = vocab_size
+        self.embedding = nn.Embedding(self.V, self.E)
+
 
     def compose(self, seqs):
-        frontiers, leaves = create_index(seqs)
-        print(frontiers)
+        # index - tensor that is going to keep track of which nodes constitute the frontier
+        # leaves - tensor that points back to the original indices of the embeddings (most likely not used)
+        index, leaves = create_index(seqs)
+        # embed the initial frontier 
+        frontier = self.embedding(seqs)
+        
 
     def forward(self, x):
         print(x)
