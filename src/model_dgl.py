@@ -253,11 +253,12 @@ class Banyan(nn.Module):
 
 
 
-
-dl = create_dataloader('/Users/mopper/Desktop/All-The-Way-Up/data/small_train.txt', 64, shuffle=True)
-model = Banyan(256, 25001, 'cpu')
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+dl = create_dataloader('../data/500k_train.txt', 128, shuffle=True)
+model = Banyan(256, 25001, 'cuda')
+model = model.to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-evaluator = IntrinsicEvaluator('cpu')
+evaluator = IntrinsicEvaluator(device)
 
 model.train()
 # with torch.autograd.set_detect_anomaly(True):
@@ -266,7 +267,7 @@ for e in range(10):
     for i in tqdm(dl):
         # model(i)
         optimizer.zero_grad()
-        loss = model(i)
+        loss = model(i.to(device))
         loss.backward()
         # loss.backward()
         optimizer.step()
@@ -274,7 +275,7 @@ for e in range(10):
     print(epoch_loss / len(dl))
 
     print('STS Evaluation', flush=True) 
-    sts12_score, sts13_score, sts14_score, sts15_score, sts16_score, stsb_score, sick_score, sem_score = evaluator.evaluate_sts(model, 'cpu')
+    sts12_score, sts13_score, sts14_score, sts15_score, sts16_score, stsb_score, sick_score, sem_score = evaluator.evaluate_sts(model, device)
     sts_score = (sts12_score + sts13_score + sts14_score + sts15_score + sts16_score + stsb_score + sick_score + sem_score) / 8
     print('Average STS Score: {}'.format(sts_score), flush=True)
     print('\n')
