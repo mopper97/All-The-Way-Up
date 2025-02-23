@@ -8,7 +8,31 @@ import dgl
 import dgl.function as fnc
 
 from utils import create_dataloader
+from eval import IntrinsicEvaluator
 
+
+class RMSNorm(nn.Module):
+    def __init__(self, dim: int, eps: float = 1e-6, elementwise_affine=True, memory_efficient=False):
+        super().__init__()
+        self.dim = dim
+        self.eps = eps
+        self.elementwise_affine = elementwise_affine
+        if self.elementwise_affine:
+            self.weight = nn.Parameter(torch.ones(dim))
+        else:
+            self.register_parameter('weight', None)
+
+    def _norm(self, x):
+        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+
+    def forward(self, x):
+        output = self._norm(x.float()).type_as(x)
+        if self.weight is not None:
+            output = output * self.weight
+        return output
+
+    def extra_repr(self) -> str:
+        return f'dim={self.dim}, eps={self.eps}, elementwise_affine={self.elementwise_affine}'
 
 class LCCompose(nn.Module):
     def __init__(self, embedding_size, channel_size):
@@ -118,11 +142,13 @@ class Banyan(nn.Module):
         self.V = vocab_size
         self.embedding = nn.Embedding(self.V, self.E)
         self.comp_fn = LCCompose(self.E, 16)
+        self.out = nn.Sequential(nn.Linear(2 * self.E, self.E), nn.GELU(), nn.Linear(self.E, self.E), RMSNorm(self.E))
         # <sos> and <eos> tokens    
         self.sos = nn.Parameter(torch.zeros(self.E), requires_grad=True)
         self.eos = nn.Parameter(torch.zeros(self.E), requires_grad=True)
         self.dropout = nn.Dropout(0.1)
         self.device = device
+        self.norm = RMSNorm(self.E)
 
 
 
@@ -195,6 +221,9 @@ class Banyan(nn.Module):
             targets.append(n_hood)
             # reduce the frontiers
             index = reduce_frontier(index, completion_mask, range_tensor, max_sim)
+
+        if roots:
+            return g.ndata['comp'][index.flatten()]
         # cat the targets
         targets = torch.cat(targets, dim=0)
         # add the <sos> and <eos> tokens to the graph
@@ -204,15 +233,18 @@ class Banyan(nn.Module):
 
 
 
-    def forward(self, x):
-        # reset cache 
-        g, targets = self.compose(x)
-        nodes = g.ndata['comp']
+    def forward(self, seqs, seqs2=None):
+        if seqs2 is not None: 
+            r1 = self.compose(seqs, roots=True)
+            r2 = self.compose(seqs2, roots=True)
+            return r1, r2
+        g, targets = self.compose(seqs)
+        nodes = self.norm(g.ndata['comp'])
         # print('final')
         # print(targets)
         lefts = nodes[targets[:, 1]]
         rights = nodes[targets[:, 2]]
-        outs = self.comp_fn(torch.cat((lefts, rights), dim=1).view(-1, 2, 16,16))
+        outs = self.out(torch.cat((lefts, rights), dim=1).view(-1, 2 * self.E))
         outs = outs @ nodes.T
         return F.cross_entropy(outs, targets[:, 0])
 
@@ -222,9 +254,11 @@ class Banyan(nn.Module):
 
 
 
-dl = create_dataloader('/Users/mopper/Desktop/All-The-Way-Up/data/small_train.txt', 256, shuffle=True)
+dl = create_dataloader('/Users/mopper/Desktop/All-The-Way-Up/data/small_train.txt', 64, shuffle=True)
 model = Banyan(256, 25001, 'cpu')
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+evaluator = IntrinsicEvaluator('cpu')
+
 model.train()
 # with torch.autograd.set_detect_anomaly(True):
 for e in range(10):
@@ -238,4 +272,10 @@ for e in range(10):
         optimizer.step()
         epoch_loss += loss.item()
     print(epoch_loss / len(dl))
+
+    print('STS Evaluation', flush=True) 
+    sts12_score, sts13_score, sts14_score, sts15_score, sts16_score, stsb_score, sick_score, sem_score = evaluator.evaluate_sts(model, 'cpu')
+    sts_score = (sts12_score + sts13_score + sts14_score + sts15_score + sts16_score + stsb_score + sick_score + sem_score) / 8
+    print('Average STS Score: {}'.format(sts_score), flush=True)
+    print('\n')
 

@@ -8,6 +8,7 @@ from tqdm import tqdm
 from utils import create_dataloader
 
 
+
 class LCCompose(nn.Module):
     def __init__(self, embedding_size, channel_size):
         super(LCCompose, self).__init__()
